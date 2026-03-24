@@ -25,4 +25,9 @@ export const creatorsAPI = {
     const response = await apiClient.get(`/creators/${creatorId}/content`)
     return response.data
   },
+
+  submitReview: async (creatorId, rating, comment) => {
+    const response = await apiClient.post(`/creators/${creatorId}/review`, { rating, comment })
+    return response.data
+  },
 }

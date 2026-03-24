@@ -6,6 +6,18 @@ import BottomNav from '../components/BottomNav'
 
 const QUICK_AMOUNTS = [50, 100, 200, 500, 1000, 2000]
 
+// ── Load Razorpay script ────────────────────────────────
+const loadRazorpay = () => {
+  return new Promise((resolve) => {
+    if (window.Razorpay) return resolve(true)
+    const script = document.createElement('script')
+    script.src = 'https://checkout.razorpay.com/v1/checkout.js'
+    script.onload = () => resolve(true)
+    script.onerror = () => resolve(false)
+    document.body.appendChild(script)
+  })
+}
+
 export default function WalletPage() {
   const navigate = useNavigate()
   const { user } = useAuthStore()
@@ -29,8 +41,8 @@ export default function WalletPage() {
         walletAPI.getWallet(),
         walletAPI.getTransactions(),
       ])
-      setWallet(walletData.wallet)
-      setTransactions(txData.transactions)
+      setWallet(walletData.wallet || null)
+      setTransactions(txData.transactions || [])
     } catch (err) {
       console.error('Wallet fetch error:', err)
     } finally {
@@ -51,24 +63,71 @@ export default function WalletPage() {
 
     setPaying(true)
     try {
-      // Dummy payment ID for testing
-      const dummyPaymentId = `pay_test_${Date.now()}`
+      // ── Step 1: Load Razorpay SDK ─────────────────────
+      const loaded = await loadRazorpay()
+      if (!loaded) {
+        alert('Failed to load Razorpay. Check your internet connection.')
+        setPaying(false)
+        return
+      }
 
-      const data = await walletAPI.addMoney(amt, dummyPaymentId)
-      setWallet(data.wallet)
-      await fetchWalletData()
-      setShowAddMoney(false)
-      setAmount('')
-      alert(`✅ ₹${amt} added to wallet successfully!`)
+      // ── Step 2: Create order from backend ─────────────
+      const orderData = await walletAPI.createOrder(amt)
+
+      // ── Step 3: Open Razorpay Checkout ────────────────
+      const options = {
+        key: import.meta.env.VITE_RAZORPAY_KEY_ID,
+        amount: orderData.amount_paise,
+        currency: 'INR',
+        name: 'CreatorHub',
+        description: `Wallet Recharge ₹${amt}`,
+        order_id: orderData.order_id,
+        prefill: {
+          name: user?.name || '',
+          contact: user?.phone || '',
+        },
+        theme: {
+          color: '#db2777', // pink-600
+        },
+        handler: async (response) => {
+          try {
+            // ── Step 4: Verify payment on backend ────────
+            const result = await walletAPI.verifyPayment({
+              razorpay_order_id: response.razorpay_order_id,
+              razorpay_payment_id: response.razorpay_payment_id,
+              razorpay_signature: response.razorpay_signature,
+              amount: amt,
+            })
+            setWallet(result.wallet)
+            await fetchWalletData()
+            setShowAddMoney(false)
+            setAmount('')
+            alert(`✅ ₹${amt} added to wallet successfully!`)
+          } catch (err) {
+            alert(err.response?.data?.detail || 'Payment verification failed!')
+          } finally {
+            setPaying(false)
+          }
+        },
+        modal: {
+          ondismiss: () => {
+            setPaying(false)
+            alert('Payment cancelled.')
+          }
+        }
+      }
+
+      const rzp = new window.Razorpay(options)
+      rzp.open()
+
     } catch (err) {
-      console.error('Wallet error:', err)
-      alert(err.response?.data?.detail || 'Failed to add money. Try again.')
-    } finally {
+      console.error('Payment error:', err)
+      alert(err.response?.data?.detail || 'Failed to initiate payment. Try again.')
       setPaying(false)
     }
   }
 
-  const filteredTransactions = transactions.filter(tx => {
+  const filteredTransactions = (transactions || []).filter(tx => {
     if (activeTab === 'all') return true
     if (activeTab === 'credit') return tx.type === 'add_money'
     if (activeTab === 'debit') return ['chat', 'call', 'content', 'payout'].includes(tx.type)
@@ -86,15 +145,8 @@ export default function WalletPage() {
     return icons[type] || '💳'
   }
 
-  const getTransactionColor = (type) => {
-    return type === 'add_money'
-      ? 'text-green-600'
-      : 'text-red-500'
-  }
-
-  const getSign = (type) => {
-    return type === 'add_money' ? '+' : '-'
-  }
+  const getTransactionColor = (type) => type === 'add_money' ? 'text-green-600' : 'text-red-500'
+  const getSign = (type) => type === 'add_money' ? '+' : '-'
 
   if (loading) {
     return (
@@ -119,7 +171,7 @@ export default function WalletPage() {
         </div>
       </div>
 
-      {/* Balance Card - Overlapping */}
+      {/* Balance Card */}
       <div className="mx-4 -mt-10">
         <div className="bg-white rounded-3xl shadow-lg p-6">
           <p className="text-gray-400 text-sm text-center">Available Balance</p>
@@ -127,19 +179,17 @@ export default function WalletPage() {
             ₹{wallet ? Number(wallet.balance).toFixed(2) : '0.00'}
           </p>
 
-          {/* Add Money Button */}
           <button
             onClick={() => setShowAddMoney(true)}
             className="w-full mt-5 bg-gradient-to-r from-pink-600 to-purple-600 text-white font-bold py-4 rounded-2xl hover:shadow-lg transition flex items-center justify-center gap-2"
           >
-            ➕ Add Money
+            ➕ Add Money via Razorpay
           </button>
 
-          {/* Quick Stats */}
           <div className="grid grid-cols-2 gap-3 mt-4">
             <div className="bg-green-50 rounded-2xl p-3 text-center">
               <p className="text-green-600 font-bold text-lg">
-                ₹{transactions
+                ₹{(transactions || [])
                   .filter(t => t.type === 'add_money')
                   .reduce((sum, t) => sum + Number(t.amount), 0)
                   .toFixed(2)}
@@ -148,8 +198,8 @@ export default function WalletPage() {
             </div>
             <div className="bg-red-50 rounded-2xl p-3 text-center">
               <p className="text-red-500 font-bold text-lg">
-                ₹{transactions
-                  .filter(t => ['debit', 'chat', 'call', 'content', 'payout'].includes(t.type))
+                ₹{(transactions || [])
+                  .filter(t => ['chat', 'call', 'content', 'payout'].includes(t.type))
                   .reduce((sum, t) => sum + Number(t.amount), 0)
                   .toFixed(2)}
               </p>
@@ -164,8 +214,6 @@ export default function WalletPage() {
         <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 px-1">
           Transaction History
         </p>
-
-        {/* Filter Tabs */}
         <div className="flex gap-2 mb-3">
           {['all', 'credit', 'debit'].map(tab => (
             <button
@@ -182,7 +230,6 @@ export default function WalletPage() {
           ))}
         </div>
 
-        {/* Transaction List */}
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
           {filteredTransactions.length === 0 ? (
             <div className="text-center py-12">
@@ -197,38 +244,26 @@ export default function WalletPage() {
                   index !== filteredTransactions.length - 1 ? 'border-b border-gray-100' : ''
                 }`}
               >
-                {/* Icon */}
                 <div className="w-10 h-10 rounded-full bg-gray-50 flex items-center justify-center text-xl flex-shrink-0">
                   {getTransactionIcon(tx.type)}
                 </div>
-
-                {/* Info */}
                 <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-gray-800 truncate">
-                    {tx.description}
-                  </p>
+                  <p className="text-sm font-semibold text-gray-800 truncate">{tx.description}</p>
                   <p className="text-xs text-gray-400 mt-0.5">
                     {new Date(tx.created_at).toLocaleDateString('en-IN', {
-                      day: 'numeric',
-                      month: 'short',
-                      year: 'numeric',
-                      hour: '2-digit',
-                      minute: '2-digit',
+                      day: 'numeric', month: 'short', year: 'numeric',
+                      hour: '2-digit', minute: '2-digit',
                     })}
                   </p>
                 </div>
-
-                {/* Amount */}
                 <div className="text-right flex-shrink-0">
                   <p className={`font-bold text-sm ${getTransactionColor(tx.type)}`}>
                     {getSign(tx.type)}₹{Number(tx.amount).toFixed(2)}
                   </p>
                   <span className={`text-xs px-2 py-0.5 rounded-full ${
-                    tx.status === 'success'
-                      ? 'bg-green-100 text-green-600'
-                      : tx.status === 'pending'
-                      ? 'bg-yellow-100 text-yellow-600'
-                      : 'bg-red-100 text-red-500'
+                    tx.status === 'success' ? 'bg-green-100 text-green-600' :
+                    tx.status === 'pending' ? 'bg-yellow-100 text-yellow-600' :
+                    'bg-red-100 text-red-500'
                   }`}>
                     {tx.status}
                   </span>
@@ -254,7 +289,6 @@ export default function WalletPage() {
               </button>
             </div>
 
-            {/* Amount Input */}
             <div className="bg-gray-50 rounded-2xl p-4 mb-4">
               <p className="text-gray-400 text-xs mb-1">Enter Amount (₹)</p>
               <div className="flex items-center gap-2">
@@ -272,7 +306,6 @@ export default function WalletPage() {
               <p className="text-xs text-gray-400 mt-1">Min ₹10 • Max ₹10,000</p>
             </div>
 
-            {/* Quick Amounts */}
             <div className="grid grid-cols-3 gap-2 mb-5">
               {QUICK_AMOUNTS.map(amt => (
                 <button
@@ -289,14 +322,26 @@ export default function WalletPage() {
               ))}
             </div>
 
-            {/* Pay Button */}
+            {/* Razorpay Pay Button */}
             <button
               onClick={handleAddMoney}
               disabled={paying || !amount}
-              className="w-full bg-gradient-to-r from-pink-600 to-purple-600 text-white font-bold py-4 rounded-2xl hover:shadow-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full bg-gradient-to-r from-pink-600 to-purple-600 text-white font-bold py-4 rounded-2xl hover:shadow-lg transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
-              {paying ? '⏳ Processing...' : `💳 Pay ₹${amount || '0'}`}
+              {paying ? (
+                <>
+                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                  Processing...
+                </>
+              ) : (
+                <>💳 Pay ₹{amount || '0'} via Razorpay</>
+              )}
             </button>
+
+            {/* Razorpay Badge */}
+            <p className="text-center text-xs text-gray-400 mt-3">
+              🔒 Secured by Razorpay
+            </p>
           </div>
         </div>
       )}

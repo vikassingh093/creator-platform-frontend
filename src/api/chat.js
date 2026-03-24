@@ -15,4 +15,14 @@ export const chatAPI = {
     const response = await apiClient.post(`/chat/room/${roomId}/end`)
     return response.data
   },
+
+  getCreatorById: async (creatorId) => {
+    const response = await apiClient.get(`/creators/${creatorId}`)
+    return response.data
+  },
+
+  getCreator: async (creatorId) => {
+    const response = await apiClient.get(`/creators/${creatorId}`)
+    return response.data
+  },
 }

@@ -1,14 +1,14 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { chatAPI } from '../api/chat'
 import useAuthStore from '../store/authStore'
+import RatingModal from '../components/RatingModal'  // ✅ import
 
 export default function ChatPage() {
-  const { creatorId } = useParams()
+  const { creatorId, roomId: roomIdParam } = useParams()
   const navigate = useNavigate()
   const { user, access_token } = useAuthStore()
 
-  // Check if current user is a creator
   const isCreator = user?.user_type === 'creator'
 
   const [messages, setMessages] = useState([])
@@ -17,10 +17,11 @@ export default function ChatPage() {
   const [creator, setCreator] = useState(null)
   const [balance, setBalance] = useState(0)
   const [chatRate, setChatRate] = useState(0)
-  const [status, setStatus] = useState('connecting') // connecting, connected, ended
+  const [status, setStatus] = useState('connecting')
   const [error, setError] = useState('')
   const [lowBalance, setLowBalance] = useState(false)
   const [timer, setTimer] = useState(0)
+  const [showRating, setShowRating] = useState(false)  // ✅ add this
 
   const wsRef = useRef(null)
   const messagesEndRef = useRef(null)
@@ -29,13 +30,12 @@ export default function ChatPage() {
   useEffect(() => {
     initChat()
     return () => cleanup()
-  }, [creatorId])
+  }, [creatorId, roomIdParam])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  // Timer
   useEffect(() => {
     if (status === 'connected') {
       timerRef.current = setInterval(() => setTimer(t => t + 1), 1000)
@@ -47,34 +47,54 @@ export default function ChatPage() {
     try {
       setStatus('connecting')
 
-      let roomData
-
-      if (isCreator) {
-        // Creator joins their own active room - use room_id from URL query param
-        const params = new URLSearchParams(window.location.search)
-        const roomIdParam = params.get('roomId')
-
-        if (!roomIdParam) {
-          setError('No active chat room found')
-          setStatus('ended')
-          return
-        }
-
-        // Get messages directly
+      // ✅ If coming from notification with roomId
+      if (roomIdParam) {
         const msgData = await chatAPI.getMessages(roomIdParam)
+        const room = msgData.room
+
         setRoomId(parseInt(roomIdParam))
         setMessages(msgData.messages || [])
 
-        // Set dummy creator info as self
-        setCreator({ name: 'Customer', profile_photo: null })
-        setChatRate(0)
+        if (isCreator) {
+          // Creator: show customer info
+          setCreator({ name: room?.user_name || 'Customer', profile_photo: room?.user_photo || null })
+          setChatRate(0)
+        } else {
+          // User: show creator info from room
+          const creatorInfo = await chatAPI.getCreatorById(room?.creator_id)
+          setCreator(creatorInfo.creator)
+          setChatRate(creatorInfo.creator?.chat_rate || 0)
+
+          const walletData = await import('../api/wallet').then(m => m.walletAPI.getWallet())
+          setBalance(Number(walletData.wallet.balance))
+        }
 
         connectWebSocket(parseInt(roomIdParam))
         return
       }
 
-      // Normal user flow
-      roomData = await chatAPI.startChat(creatorId)
+      // ✅ Creator flow via query param (from dashboard)
+      if (isCreator) {
+        const params = new URLSearchParams(window.location.search)
+        const qRoomId = params.get('roomId')
+
+        if (!qRoomId) {
+          setError('No active chat room found')
+          setStatus('ended')
+          return
+        }
+
+        const msgData = await chatAPI.getMessages(qRoomId)
+        setRoomId(parseInt(qRoomId))
+        setMessages(msgData.messages || [])
+        setCreator({ name: 'Customer', profile_photo: null })
+        setChatRate(0)
+        connectWebSocket(parseInt(qRoomId))
+        return
+      }
+
+      // ✅ Normal user flow via creatorId
+      const roomData = await chatAPI.startChat(creatorId)
       setRoomId(roomData.room_id)
       setCreator(roomData.creator)
       setChatRate(roomData.creator.chat_rate)
@@ -82,11 +102,11 @@ export default function ChatPage() {
       const msgData = await chatAPI.getMessages(roomData.room_id)
       setMessages(msgData.messages || [])
 
-      // Get wallet balance
       const walletData = await import('../api/wallet').then(m => m.walletAPI.getWallet())
       setBalance(Number(walletData.wallet.balance))
 
       connectWebSocket(roomData.room_id)
+
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to start chat')
       setStatus('ended')
@@ -145,6 +165,9 @@ export default function ChatPage() {
         setStatus('ended')
         setError(data.message)
         clearInterval(timerRef.current)
+        if (!isCreator && (creatorId || creator?.id)) {
+          setShowRating(true)  // ✅ show rating on auto-end too
+        }
         break
 
       case 'user_joined':
@@ -183,6 +206,10 @@ export default function ChatPage() {
       cleanup()
       setStatus('ended')
       setError('Chat ended by you')
+      // ✅ Show rating only for users, not creators
+      if (!isCreator && (creatorId || creator?.id)) {
+        setShowRating(true)
+      }
     }
   }
 
@@ -205,6 +232,19 @@ export default function ChatPage() {
   if (status === 'ended') {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center p-6">
+
+        {/* ✅ Rating Modal */}
+        {showRating && (creatorId || creator?.id) && (
+          <RatingModal
+            creatorId={creatorId || creator?.id}
+            creatorName={creator?.name || 'Creator'}
+            onClose={() => setShowRating(false)}
+            onSubmitted={() => {
+              setShowRating(false)
+            }}
+          />
+        )}
+
         <div className="bg-white rounded-3xl shadow-lg p-8 text-center w-full max-w-sm">
           <p className="text-6xl mb-4">👋</p>
           <h2 className="text-xl font-bold text-gray-800 mb-2">Chat Ended</h2>
@@ -213,12 +253,14 @@ export default function ChatPage() {
             Duration: <span className="font-bold text-pink-600">{formatTime(timer)}</span>
           </p>
           <div className="space-y-3">
-            <button
-              onClick={() => navigate(`/creator/${creatorId}`)}
-              className="w-full bg-gradient-to-r from-pink-600 to-purple-600 text-white font-bold py-3 rounded-2xl"
-            >
-              View Profile
-            </button>
+            {creatorId && (
+              <button
+                onClick={() => navigate(`/creator/${creatorId}`)}
+                className="w-full bg-gradient-to-r from-pink-600 to-purple-600 text-white font-bold py-3 rounded-2xl"
+              >
+                View Profile
+              </button>
+            )}
             <button
               onClick={() => navigate('/')}
               className="w-full bg-gray-100 text-gray-700 font-bold py-3 rounded-2xl"

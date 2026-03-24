@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { creatorsAPI } from '../api/creators'
 import useAuthStore from '../store/authStore'
+import CallModal from '../components/call/CallModal'
 
 export default function CreatorProfilePage() {
   const { id } = useParams()
@@ -13,6 +14,7 @@ export default function CreatorProfilePage() {
   const [activeTab, setActiveTab] = useState('about')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [showCallModal, setShowCallModal] = useState(false)
 
   const { user } = useAuthStore()
   const isCreator = user?.user_type === 'creator'
@@ -163,7 +165,7 @@ export default function CreatorProfilePage() {
               💬 Chat ₹{creator.chat_rate}/min
             </button>
             <button
-              onClick={() => navigate(`/call/${creator.id}`)}
+              onClick={() => setShowCallModal(true)}
               className="flex-1 bg-gradient-to-r from-purple-600 to-blue-600 text-white font-bold py-3 rounded-2xl text-sm flex items-center justify-center gap-2"
             >
               📞 Call ₹{creator.call_rate}/min
@@ -171,6 +173,14 @@ export default function CreatorProfilePage() {
           </>
         )}
       </div>
+
+      {/* Call Modal */}
+      {showCallModal && (
+        <CallModal
+          creator={creator}
+          onClose={() => setShowCallModal(false)}
+        />
+      )}
 
       {/* Tabs */}
       <div className="bg-white flex border-b border-gray-100 sticky top-0 z-10">

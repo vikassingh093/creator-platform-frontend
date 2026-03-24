@@ -16,12 +16,15 @@ const useAuthStore = create(
         isAuthenticated: true,
       }),
 
-      logout: () => set({
-        user: null,
-        access_token: null,
-        refresh_token: null,
-        isAuthenticated: false,
-      }),
+      logout: () => {
+        localStorage.clear()
+        set({
+          user: null,
+          access_token: null,
+          refresh_token: null,
+          isAuthenticated: false,
+        })
+      }
     }),
     {
       name: 'auth-storage',

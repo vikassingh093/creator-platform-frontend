@@ -30,7 +30,7 @@ export default function HomePage() {
     const fetchCategories = async () => {
       try {
         const data = await creatorsAPI.getCategories()
-        setCategories(data.categories)
+        setCategories(['All', ...(data.categories || [])])  // ✅ fallback
       } catch (err) {
         console.error('Failed to fetch categories:', err)
       }
@@ -49,7 +49,7 @@ export default function HomePage() {
         if (search.trim()) params.search = search.trim()
 
         const data = await creatorsAPI.getCreators(params)
-        setCreators(data.creators)
+        setCreators(data.creators || [])  // ✅ fallback to empty array
       } catch (err) {
         setError('Failed to load creators')
         console.error(err)
@@ -138,7 +138,7 @@ export default function HomePage() {
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-3">
-            {creators.map(creator => (
+            {(creators || []).map(creator => (
               <button
                 key={creator.id}
                 onClick={() => navigate(`/creator/${creator.id}`)}

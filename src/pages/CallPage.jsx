@@ -1,175 +1,234 @@
-import { useState, useEffect } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import { mockCreators, mockUser } from '../utils/mockData'
-import AudioCall from '../components/call/AudioCall'
-import VideoCall from '../components/call/VideoCall'
-import CallControls from '../components/call/CallControls'
-import CallStatus from '../components/call/CallStatus'
+import { useState, useEffect, useRef } from "react";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
+import AgoraRTC from "agora-rtc-sdk-ng";
+import apiClient from "../api/client";
+
+const AUDIO_RATE = 20;
+const VIDEO_RATE = 50;
 
 export default function CallPage() {
-  const { id } = useParams()
-  const navigate = useNavigate()
-  const creator = mockCreators.find(c => c.id === parseInt(id))
+  const params = useParams();
+  const navigate = useNavigate();
+  const location = useLocation();
 
-  const [callStatus, setCallStatus] = useState('calling')
-  const [callType, setCallType] = useState('audio')
-  const [duration, setDuration] = useState(0)
-  const [isMuted, setIsMuted] = useState(false)
-  const [isSpeakerOn, setIsSpeakerOn] = useState(true)
-  const [isVideoOn, setIsVideoOn] = useState(true)
-  const [totalCost, setTotalCost] = useState(0)
-  const [walletBalance] = useState(mockUser.walletBalance)
+  const creatorId = params.creatorId || params.id || location.state?.creatorId || location.state?.creator?.id;
+  const callType = location.state?.callType || "audio";
 
-  // Auto connect after 3 seconds
+  console.log("✅ params:", params);
+  console.log("✅ creatorId:", creatorId);
+  console.log("✅ callType:", callType);
+
+  const [callStatus, setCallStatus] = useState("connecting");
+  const [duration, setDuration] = useState(0);
+  const [totalCost, setTotalCost] = useState(0);
+  const [creator, setCreator] = useState(location.state?.creator || {});
+  const [roomId, setRoomId] = useState(null);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isCameraOff, setIsCameraOff] = useState(false);
+  const [error, setError] = useState(null);
+
+  const clientRef = useRef(null);
+  const localAudioRef = useRef(null);
+  const localVideoRef = useRef(null);
+  const timerRef = useRef(null);
+  const durationRef = useRef(0);
+  const creatorIdRef = useRef(creatorId); // ✅ store in ref to avoid stale closure
+
+  const rate = callType === "audio" ? AUDIO_RATE : VIDEO_RATE;
+
   useEffect(() => {
-    if (callStatus === 'calling') {
-      const timer = setTimeout(() => {
-        setCallStatus('connected')
-      }, 3000)
-      return () => clearTimeout(timer)
+    console.log("useEffect creatorId:", creatorIdRef.current);
+    if (!creatorIdRef.current) {
+      setError("Missing creator ID. Please go back and try again.");
+      setCallStatus("ended");
+      return;
     }
-  }, [callStatus])
+    startCall(creatorIdRef.current, callType); // ✅ pass explicitly
+    return () => cleanup();
+  }, []);
 
-  // Timer & cost calculation
-  useEffect(() => {
-    let interval
-    if (callStatus === 'connected') {
-      interval = setInterval(() => {
-        setDuration(prev => {
-          const newDuration = prev + 1
-          setTotalCost(Math.floor(newDuration / 60) * creator.callRate)
-          return newDuration
+  const startCall = async (cId, cType) => {
+    try {
+      const payload = {
+        creator_id: parseInt(cId),
+        call_type: cType
+      };
+      console.log("✅ Sending to API:", payload);
+
+      const res = await apiClient.post("/calls/initiate", payload);
+      const { room_id, channel_name, token, app_id } = res.data;
+      setRoomId(room_id);
+
+      console.log("✅ API Response:", res.data);
+
+      // ✅ Skip Agora only if no app_id
+      if (!app_id || app_id.length < 10) {
+        console.log("⚠️ No Agora app_id - mock mode");
+        setCallStatus("active");
+        timerRef.current = setInterval(() => {
+          durationRef.current += 1;
+          setDuration(durationRef.current);
+          setTotalCost(Math.ceil(durationRef.current / 60) * rate);
+        }, 1000);
+        return;
+      }
+
+      const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
+      clientRef.current = client;
+
+      // ✅ token can be null for Agora projects without certificate enabled
+      await client.join(app_id, channel_name, token || null, null);
+
+      if (cType === "video") {
+        const [audioTrack, videoTrack] = await AgoraRTC.createMicrophoneAndCameraTracks();
+        localAudioRef.current = audioTrack;
+        localVideoRef.current = videoTrack;
+        await client.publish([audioTrack, videoTrack]);
+        videoTrack.play("local-video");
+      } else {
+        const audioTrack = await AgoraRTC.createMicrophoneAudioTrack();
+        localAudioRef.current = audioTrack;
+        await client.publish([audioTrack]);
+      }
+
+      client.on("user-published", async (user, mediaType) => {
+        await client.subscribe(user, mediaType);
+        if (mediaType === "audio") user.audioTrack?.play();
+        if (mediaType === "video") user.videoTrack?.play("remote-video");
+      });
+
+      setCallStatus("active");
+
+      timerRef.current = setInterval(() => {
+        durationRef.current += 1;
+        setDuration(durationRef.current);
+        setTotalCost(Math.ceil(durationRef.current / 60) * rate);
+      }, 1000);
+
+    } catch (err) {
+      console.error("❌ Call error:", err.response?.data || err.message);
+      setError(err.response?.data?.detail || err.message);
+      setCallStatus("ended");
+    }
+  };
+
+  const endCall = async () => {
+    clearInterval(timerRef.current)
+    const finalDuration = durationRef.current
+    console.log("📌 Ending call - duration:", finalDuration, "roomId:", roomId)
+
+    try {
+      if (roomId) {
+        const res = await apiClient.post("/calls/end", {
+          room_id: roomId,
+          duration: finalDuration > 0 ? finalDuration : 60 // ✅ min 60 sec if timer didn't run
         })
-      }, 1000)
+        console.log("✅ Call ended - cost deducted:", res.data)
+      } else {
+        console.log("❌ No roomId - balance NOT deducted")
+      }
+    } catch (e) {
+      console.error("❌ End call error:", e.response?.data || e.message)
     }
-    return () => clearInterval(interval)
-  }, [callStatus])
+    cleanup()
+    navigate(-1)
+  };
 
-  const formatDuration = (seconds) => {
-    const mins = Math.floor(seconds / 60)
-    const secs = seconds % 60
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
-  }
+  const cleanup = () => {
+    clearInterval(timerRef.current);
+    localAudioRef.current?.close();
+    localVideoRef.current?.close();
+    clientRef.current?.leave();
+  };
 
-  const handleEndCall = () => {
-    setCallStatus('ended')
-    setTimeout(() => navigate(-1), 3000)
-  }
+  const toggleMute = () => {
+    localAudioRef.current?.setEnabled(isMuted);
+    setIsMuted(!isMuted);
+  };
 
-  if (!creator) {
+  const toggleCamera = () => {
+    localVideoRef.current?.setEnabled(isCameraOff);
+    setIsCameraOff(!isCameraOff);
+  };
+
+  const formatDuration = (sec) => {
+    const m = Math.floor(sec / 60).toString().padStart(2, "0");
+    const s = (sec % 60).toString().padStart(2, "0");
+    return `${m}:${s}`;
+  };
+
+  if (error) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-900">
-        <p className="text-white">Creator not found</p>
+      <div className="min-h-screen bg-gray-900 flex items-center justify-center">
+        <div className="text-center text-white p-8">
+          <div className="text-6xl mb-4">❌</div>
+          <h2 className="text-2xl font-bold mb-2">Call Failed</h2>
+          <p className="text-red-400 mb-6">{error}</p>
+          <button onClick={() => navigate(-1)} className="bg-purple-600 px-6 py-3 rounded-xl">
+            Go Back
+          </button>
+        </div>
       </div>
-    )
+    );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-gray-900 flex flex-col p-6">
-
-      {/* Top Bar */}
-      <div className="flex justify-between items-center mb-6">
-        {/* Call Type Toggle - Only show when connected */}
-        {callStatus === 'connected' && (
-          <div className="flex gap-2 bg-white bg-opacity-10 p-1 rounded-2xl">
-            <button
-              onClick={() => setCallType('audio')}
-              className={`px-4 py-2 rounded-xl text-sm font-semibold transition ${
-                callType === 'audio'
-                  ? 'bg-purple-600 text-white shadow-lg'
-                  : 'text-white hover:bg-white hover:bg-opacity-10'
-              }`}
-            >
-              🎙️ Audio
-            </button>
-            <button
-              onClick={() => setCallType('video')}
-              className={`px-4 py-2 rounded-xl text-sm font-semibold transition ${
-                callType === 'video'
-                  ? 'bg-purple-600 text-white shadow-lg'
-                  : 'text-white hover:bg-white hover:bg-opacity-10'
-              }`}
-            >
-              📹 Video
-            </button>
-          </div>
-        )}
-
-        {/* Wallet Balance */}
-        <div className="ml-auto bg-white bg-opacity-10 px-4 py-2 rounded-2xl">
-          <p className="text-white text-sm font-semibold">
-            💰 ₹{walletBalance - totalCost}
-          </p>
+    <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-between p-6">
+      {callType === "video" && (
+        <div className="relative w-full max-w-md h-64 bg-black rounded-2xl overflow-hidden mb-4">
+          <div id="remote-video" className="w-full h-full" />
+          <div id="local-video" className="absolute bottom-2 right-2 w-24 h-20 bg-gray-800 rounded-lg" />
         </div>
-      </div>
+      )}
 
-      {/* Middle - Call Content */}
-      <div className="flex-1 flex flex-col items-center justify-center">
-        {/* Calling or Ended Status */}
-        {(callStatus === 'calling' || callStatus === 'ended') && (
-          <CallStatus
-            callStatus={callStatus}
-            creator={creator}
-            duration={duration}
-            formatDuration={formatDuration}
-            totalCost={totalCost}
-          />
-        )}
-
-        {/* Connected - Audio or Video */}
-        {callStatus === 'connected' && callType === 'audio' && (
-          <AudioCall
-            creator={creator}
-            duration={duration}
-            formatDuration={formatDuration}
-            totalCost={totalCost}
-          />
-        )}
-
-        {callStatus === 'connected' && callType === 'video' && (
-          <VideoCall
-            creator={creator}
-            duration={duration}
-            formatDuration={formatDuration}
-            totalCost={totalCost}
-            isVideoOn={isVideoOn}
-          />
-        )}
-      </div>
-
-      {/* Bottom - Call Controls */}
-      {callStatus === 'connected' && (
-        <CallControls
-          callType={callType}
-          isMuted={isMuted}
-          isSpeakerOn={isSpeakerOn}
-          isVideoOn={isVideoOn}
-          onMuteToggle={() => setIsMuted(!isMuted)}
-          onSpeakerToggle={() => setIsSpeakerOn(!isSpeakerOn)}
-          onVideoToggle={() => setIsVideoOn(!isVideoOn)}
-          onEndCall={handleEndCall}
+      <div className="text-center mt-8">
+        <img
+          src={creator.profile_photo || creator.photo || "/default-avatar.png"}
+          alt={creator.name}
+          className="w-24 h-24 rounded-full mx-auto mb-4 object-cover border-4 border-purple-500"
         />
-      )}
+        <h1 className="text-white text-2xl font-bold">{creator.name}</h1>
+        <p className="text-purple-300 text-sm">{creator.category || creator.specialty}</p>
 
-      {/* Calling - Only End Call Button */}
-      {callStatus === 'calling' && (
-        <div className="flex flex-col items-center gap-2">
-          <button
-            onClick={handleEndCall}
-            className="w-20 h-20 rounded-full bg-red-500 flex items-center justify-center hover:bg-red-600 transition shadow-xl"
-          >
-            <span className="text-3xl">📵</span>
+        <div className="mt-4">
+          {callStatus === "connecting" && (
+            <p className="text-yellow-400 animate-pulse">🔄 Connecting...</p>
+          )}
+          {callStatus === "active" && (
+            <div>
+              <p className="text-green-400 text-xl font-mono">{formatDuration(duration)}</p>
+              <p className="text-gray-400 text-sm mt-1">₹{rate}/min • Total: ₹{totalCost}</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2 bg-gray-800 px-4 py-2 rounded-full mt-4">
+        <span>{callType === "video" ? "📹" : "🎙️"}</span>
+        <span className="text-white text-sm capitalize">{callType} Call</span>
+        <span className="text-purple-400 text-sm">₹{rate}/min</span>
+      </div>
+
+      <div className="flex items-center gap-6 mt-8 mb-8">
+        <button onClick={toggleMute}
+          className={`w-14 h-14 rounded-full flex items-center justify-center text-xl ${isMuted ? "bg-red-600" : "bg-gray-700"}`}>
+          {isMuted ? "🔇" : "🎙️"}
+        </button>
+
+        <button onClick={endCall}
+          className="w-20 h-20 bg-red-600 rounded-full flex items-center justify-center text-3xl shadow-lg">
+          📵
+        </button>
+
+        {callType === "video" ? (
+          <button onClick={toggleCamera}
+            className={`w-14 h-14 rounded-full flex items-center justify-center text-xl ${isCameraOff ? "bg-red-600" : "bg-gray-700"}`}>
+            {isCameraOff ? "📷" : "📹"}
           </button>
-          <p className="text-white text-xs">Cancel</p>
-        </div>
-      )}
-
-      {/* Low Balance Warning */}
-      {walletBalance - totalCost < 100 && callStatus === 'connected' && (
-        <div className="bg-red-500 bg-opacity-80 text-white text-center py-2 px-4 rounded-2xl mt-4">
-          ⚠️ Low balance! Add money to continue
-        </div>
-      )}
+        ) : (
+          <div className="w-14 h-14" />
+        )}
+      </div>
     </div>
-  )
+  );
 }
