@@ -1,33 +1,23 @@
 import axios from 'axios'
 
 const apiClient = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1',
-  headers: { 'Content-Type': 'application/json' }
+  baseURL: import.meta.env.VITE_API_URL,
 })
 
-// Get token from zustand persisted storage
-const getToken = () => {
+apiClient.interceptors.request.use((config) => {
+  // ✅ FIXED: read from zustand persisted store correctly
   try {
-    const auth = JSON.parse(localStorage.getItem('auth-storage'))
-    return auth?.state?.access_token || null
-  } catch {
-    return null
-  }
-}
-
-// Request interceptor
-apiClient.interceptors.request.use(
-  (config) => {
-    const token = getToken()
+    const stored = JSON.parse(localStorage.getItem('auth-storage') || '{}')
+    const token = stored?.state?.access_token
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
     }
-    return config
-  },
-  (error) => Promise.reject(error)
-)
+  } catch (e) {
+    console.error('Token read error:', e)
+  }
+  return config
+})
 
-// Response interceptor
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {

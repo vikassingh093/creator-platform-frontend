@@ -7,41 +7,34 @@ export default function CreatorCallPage() {
   const location = useLocation()
   const { roomId: paramRoomId } = useParams()
 
-  // ✅ Safe fallback if state is missing
   const state = location.state || {}
   const roomId = state.roomId || paramRoomId
   const channelName = state.channelName || ""
   const token = state.token || null
-  const appId = state.appId || ""
+  const appId = import.meta.env.VITE_AGORA_APP_ID  // ✅ from .env
   const callType = state.callType || "audio"
   const callerName = state.callerName || "User"
 
   const [duration, setDuration] = useState(0)
   const [callStatus, setCallStatus] = useState("connecting")
   const [isMuted, setIsMuted] = useState(false)
-  const [isEnding, setIsEnding] = useState(false) // ✅ prevent double end
+  const [endInfo, setEndInfo] = useState(null)
 
   const clientRef = useRef(null)
   const localAudioRef = useRef(null)
   const localVideoRef = useRef(null)
   const timerRef = useRef(null)
   const durationRef = useRef(0)
-  const hasEndedRef = useRef(false) // ✅ prevent double end
+  const hasEndedRef = useRef(false)
+  const timerStartedRef = useRef(false)
 
   useEffect(() => {
-    console.log("🎬 CreatorCallPage mounted - roomId:", roomId, "callType:", callType)
-    
     if (!roomId) {
-      console.error("❌ No roomId found - going back")
       navigate("/creator-dashboard")
       return
     }
-
     joinCall()
-
-    // ✅ Only cleanup audio/video tracks on unmount, NOT end the call
     return () => {
-      console.log("🧹 CreatorCallPage unmounting - cleaning up tracks only")
       clearInterval(timerRef.current)
       localAudioRef.current?.close()
       localVideoRef.current?.close()
@@ -51,34 +44,23 @@ export default function CreatorCallPage() {
 
   const joinCall = async () => {
     try {
-      console.log("📞 Creator joining call - appId:", appId, "channel:", channelName)
-
-      // ✅ Keep status as "connecting" until actually joined
       setCallStatus("connecting")
+      await apiClient.post(`/calls/accept/${roomId}`)
+
+      console.log("🔍 Creator Agora:", { appId, channelName, uid: state.uid || 2, hasToken: !!token })
 
       if (!appId || appId.length < 10) {
-        console.log("⚠️ No Agora appId - mock mode, starting timer now")
-        // ✅ In mock mode - start timer immediately (creator accepted = picked up)
         setCallStatus("active")
         startTimer()
         return
       }
 
-      let AgoraRTC
-      try {
-        AgoraRTC = (await import("agora-rtc-sdk-ng")).default
-      } catch (e) {
-        console.log("⚠️ Agora SDK not available - mock mode")
-        setCallStatus("active")
-        startTimer()
-        return
-      }
-
+      const AgoraRTC = (await import("agora-rtc-sdk-ng")).default
       const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" })
       clientRef.current = client
 
-      await client.join(appId, channelName, token || null, null)
-      console.log("✅ Creator joined Agora channel")
+      await client.join(appId, channelName, token || null, state.uid || 2)
+      console.log("✅ Creator joined Agora with uid:", state.uid || 2)
 
       if (callType === "video") {
         const [audioTrack, videoTrack] = await AgoraRTC.createMicrophoneAndCameraTracks()
@@ -92,33 +74,32 @@ export default function CreatorCallPage() {
         await client.publish([audioTrack])
       }
 
+      // ✅ Timer starts ONLY when user's stream received = both connected
       client.on("user-published", async (user, mediaType) => {
         await client.subscribe(user, mediaType)
         if (mediaType === "audio") user.audioTrack?.play()
         if (mediaType === "video") user.videoTrack?.play("remote-video")
+        startTimer()
       })
 
       client.on("user-left", () => {
-        console.log("📴 User left the channel")
+        console.log("📴 User left")
         endCall()
       })
 
-      // ✅ Timer starts AFTER successfully joining = creator picked up
-      setCallStatus("active")
-      startTimer()
-      console.log("✅ Timer started - billing begins now")
+      setCallStatus("waiting") // waiting for user stream
 
     } catch (err) {
       console.error("❌ Creator join error:", err)
-      setCallStatus("active")
-      startTimer() // ✅ Still start timer - creator accepted the call
+      setCallStatus("error")
     }
   }
 
-  // ✅ Separate timer function
   const startTimer = () => {
-    clearInterval(timerRef.current) // clear any existing
-    durationRef.current = 0
+    if (timerStartedRef.current) return
+    timerStartedRef.current = true
+    setCallStatus("active")
+    console.log("✅ Both connected - timer started")
     timerRef.current = setInterval(() => {
       durationRef.current += 1
       setDuration(d => d + 1)
@@ -128,47 +109,91 @@ export default function CreatorCallPage() {
   const endCall = async () => {
     if (hasEndedRef.current) return
     hasEndedRef.current = true
-    setIsEnding(true)
 
     clearInterval(timerRef.current)
     const finalDuration = durationRef.current
-    console.log("📌 Ending call - duration:", finalDuration, "secs =", Math.ceil(finalDuration / 60), "mins (ceil)")
 
     localAudioRef.current?.close()
     localVideoRef.current?.close()
     try { await clientRef.current?.leave() } catch (e) {}
 
     try {
-      const res = await apiClient.post("/calls/end", {
+      await apiClient.post("/calls/end", {
         room_id: Number(roomId),
-        duration: finalDuration  // ✅ Send actual duration, backend does ceil
+        duration: finalDuration
       })
-      console.log("✅ Call ended:", res.data)
     } catch (e) {
-      console.error("❌ End call error:", e.response?.data || e.message)
+      console.error("❌ End call error:", e)
     }
 
-    navigate("/creator-dashboard", { replace: true })
+    setEndInfo({ duration: finalDuration })
+    setCallStatus("ended")
   }
 
   const toggleMute = () => {
-    if (localAudioRef.current) {
-      const newMuted = !isMuted
-      localAudioRef.current.setEnabled(!newMuted)
-      setIsMuted(newMuted)
-    }
+    localAudioRef.current?.setEnabled(isMuted)
+    setIsMuted(!isMuted)
   }
 
-  const formatDuration = (sec) => {
+  const formatTime = (sec) => {
     const m = Math.floor(sec / 60).toString().padStart(2, "0")
     const s = (sec % 60).toString().padStart(2, "0")
     return `${m}:${s}`
   }
 
+  // ─── ENDED SCREEN ────────────────────────────────────────
+  if (callStatus === "ended") {
+    return (
+      <div className="min-h-screen bg-gray-900 flex items-center justify-center p-6">
+        <div className="text-center text-white w-full max-w-sm">
+          <div className="text-7xl mb-4">📵</div>
+          <h2 className="text-2xl font-bold mb-4">Call Ended</h2>
+          {endInfo && endInfo.duration > 0 && (
+            <div className="bg-gray-800 rounded-2xl p-4 mb-6 space-y-2 text-left">
+              <h3 className="text-center font-bold text-purple-300 mb-3">📊 Summary</h3>
+              <div className="flex justify-between">
+                <span className="text-gray-400">Duration</span>
+                <span className="font-bold">{formatTime(endInfo.duration)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-gray-400">Your Earning (80%)</span>
+                <span className="font-bold text-green-400">
+                  ₹{((Math.ceil(endInfo.duration / 60)) * (callType === "audio" ? 20 : 50) * 0.8).toFixed(2)}
+                </span>
+              </div>
+            </div>
+          )}
+          <button
+            onClick={() => navigate("/creator-dashboard", { replace: true })}
+            className="w-full bg-purple-600 py-4 rounded-2xl font-bold text-lg"
+          >
+            Go to Dashboard
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  // ─── ERROR SCREEN ─────────────────────────────────────────
+  if (callStatus === "error") {
+    return (
+      <div className="min-h-screen bg-gray-900 flex items-center justify-center p-6">
+        <div className="text-center text-white">
+          <div className="text-7xl mb-4">❌</div>
+          <h2 className="text-2xl font-bold mb-2">Connection Failed</h2>
+          <button
+            onClick={() => navigate("/creator-dashboard", { replace: true })}
+            className="bg-purple-600 px-6 py-3 rounded-xl font-bold mt-4"
+          >
+            Go Back
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-between p-6">
-
-      {/* Video area */}
       {callType === "video" && (
         <div className="relative w-full max-w-md h-64 bg-black rounded-2xl overflow-hidden mb-4">
           <div id="remote-video" className="w-full h-full" />
@@ -176,7 +201,6 @@ export default function CreatorCallPage() {
         </div>
       )}
 
-      {/* Call info */}
       <div className="text-center mt-8 flex-1 flex flex-col items-center justify-center">
         <div className="w-24 h-24 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 flex items-center justify-center text-4xl mb-4">
           👤
@@ -184,26 +208,30 @@ export default function CreatorCallPage() {
         <h1 className="text-white text-2xl font-bold">{callerName}</h1>
         <p className="text-purple-300 text-sm capitalize mt-1">{callType} Call</p>
 
-        {callStatus === "active" && (
-          <p className="text-green-400 text-2xl font-mono mt-4">
-            {formatDuration(duration)}
-          </p>
-        )}
-        {callStatus === "connecting" && (
-          <p className="text-yellow-400 animate-pulse mt-4 text-lg">🔄 Connecting...</p>
-        )}
-
-        {/* Rate info */}
-        <p className="text-gray-500 text-xs mt-2">
-          ₹{callType === "audio" ? 20 : 50}/min
-        </p>
+        <div className="mt-6">
+          {callStatus === "connecting" && (
+            <p className="text-yellow-400 animate-pulse text-lg">🔄 Connecting...</p>
+          )}
+          {callStatus === "waiting" && (
+            <p className="text-blue-400 animate-pulse text-lg">⏳ Waiting for customer...</p>
+          )}
+          {callStatus === "active" && (
+            <div>
+              <p className="text-green-400 text-3xl font-mono font-bold">
+                {formatTime(duration)}
+              </p>
+              <p className="text-gray-400 text-sm mt-1">
+                ₹{callType === "audio" ? 20 : 50}/min
+              </p>
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Controls */}
       <div className="flex items-center gap-8 mb-8">
         <button
           onClick={toggleMute}
-          className={`w-14 h-14 rounded-full flex items-center justify-center text-xl shadow-lg transition ${
+          className={`w-14 h-14 rounded-full flex items-center justify-center text-xl shadow-lg ${
             isMuted ? "bg-red-600" : "bg-gray-700"
           }`}
         >
@@ -212,10 +240,9 @@ export default function CreatorCallPage() {
 
         <button
           onClick={endCall}
-          disabled={isEnding}
-          className="w-20 h-20 bg-red-600 rounded-full flex items-center justify-center text-3xl shadow-2xl disabled:opacity-50 active:scale-95 transition"
+          className="w-20 h-20 bg-red-600 rounded-full flex items-center justify-center text-3xl shadow-2xl active:scale-95"
         >
-          {isEnding ? "⏳" : "📵"}
+          📵
         </button>
 
         <div className="w-14 h-14" />

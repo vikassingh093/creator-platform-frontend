@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { authAPI } from '../api/auth'
 import useAuthStore from '../store/authStore'
 import BottomNav from '../components/BottomNav'
+import apiClient from '../api/client'   // ✅ ADD THIS
 
 export default function ProfilePage() {
   const navigate = useNavigate()
@@ -19,11 +20,26 @@ export default function ProfilePage() {
 
   const handleLogout = async () => {
     try {
+      // ✅ End any active call before logout — no charge
+      const activeRoomId = localStorage.getItem("active_room_id")
+      if (activeRoomId) {
+        await apiClient.post("/calls/end", {
+          room_id: parseInt(activeRoomId),
+          duration: 0
+        }).catch(() => {})
+        localStorage.removeItem("active_room_id")
+      }
+    } catch (e) {}
+
+    try {
       await authAPI.logout(user?.id)
     } catch (err) {
-      // ignore error
+      // ignore
     } finally {
       logout()
+      localStorage.removeItem("token")
+      localStorage.removeItem("user")
+      localStorage.removeItem("active_room_id")
       navigate('/login', { replace: true })
     }
   }

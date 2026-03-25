@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { notificationsAPI } from '../api/notifications';
+import apiClient from '../api/client';  // ✅ ADD THIS
 import BottomNav from '../components/BottomNav';
 
 export default function NotificationPage() {
@@ -54,18 +55,66 @@ export default function NotificationPage() {
       setUnreadCount(prev => Math.max(0, prev - 1))
     }
 
+    // 🚫 MISSED CALL CALLBACK — TEMPORARILY DISABLED
+    // TODO: Re-enable when call-back flow is fully tested
+    // The issue: after callback, new room polled too fast → got "ended" status
+    // from stale DB read → immediate rejection screen shown again.
+    // Fix needed before re-enabling:
+    //   1. Add proper delay before polling new room
+    //   2. Test full flow: tap notification → call initiates → creator accepts → active
+    //
+    // if (notification.type === 'call' && notification.reference_id?.startsWith('missed_call_')) {
+    //   const parts = notification.reference_id.split('_')
+    //   // format: missed_call_{creatorId}_{callType}
+    //   const creatorId = Number(parts[2])
+    //   const callType = parts[3] || 'audio'
+    //   try {
+    //     const res = await apiClient.post('/calls/initiate', {
+    //       creator_id: creatorId,
+    //       call_type: callType
+    //     })
+    //     const data = res.data
+    //     navigate('/call', {
+    //       state: {
+    //         roomId: data.room_id,
+    //         channelName: data.channel_name,
+    //         token: data.token,
+    //         uid: data.uid,
+    //         callType: callType,
+    //         creatorName: data.creator?.name || 'Creator',
+    //         ratePerMinute: data.rate_per_minute,
+    //         balance: data.balance,
+    //         creatorId: creatorId,
+    //       }
+    //     })
+    //   } catch (err) {
+    //     alert(err.response?.data?.detail || 'Creator is offline or insufficient balance')
+    //   }
+    //   return
+    // }
+
+    // ✅ Missed call notification → go to creator profile instead (call back disabled)
+    if (notification.type === 'call' && notification.reference_id?.startsWith('missed_call_')) {
+      const parts = notification.reference_id.split('_')
+      const creatorId = Number(parts[2])
+      if (creatorId) navigate(`/creator/${creatorId}`)
+      return
+    }
+
+    // ✅ existing navigation
     if (notification.type === 'chat' && notification.reference_id) {
       const roomId = notification.reference_id.replace('room_', '')
-      navigate(`/chat/room/${roomId}`)  // ✅ navigates to /chat/room/37
+      navigate(`/chat/room/${roomId}`)
     } else if (notification.type === 'call' && notification.reference_id) {
-      const callId = notification.reference_id.replace('call_', '')
-      navigate(`/call/${callId}`)
+      navigate('/home')
     } else if (notification.type === 'wallet') {
       navigate('/wallet')
     }
   };
 
-  const getIcon = (type) => {
+  // ✅ Show 📵 for missed call, 📞 for regular call
+  const getIcon = (type, referenceId) => {
+    if (type === 'call' && referenceId?.startsWith('missed_call_')) return '📵'
     switch (type) {
       case 'chat': return '💬'
       case 'call': return '📞'
@@ -162,7 +211,7 @@ export default function NotificationPage() {
               <div className={`w-10 h-10 rounded-full flex items-center justify-center text-xl flex-shrink-0
                 ${!notification.is_read ? getBgColor(notification.type) : 'bg-gray-100'}
               `}>
-                {getIcon(notification.type)}
+                {getIcon(notification.type, notification.reference_id)}
               </div>
 
               {/* Content */}
