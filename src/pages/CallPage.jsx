@@ -73,7 +73,11 @@ export default function CallPage() {
       // ✅ Small delay to let backend settle before polling
       await new Promise(r => setTimeout(r, 500));
 
-      // ✅ Poll for room to become active (creator must accept first)
+      // ✅ If this is a creator-initiated call that the customer already accepted,
+      //    the room is already 'active' — skip the long polling
+      const isAlreadyAccepted = state.initiatedBy === 'creator';
+
+      // ✅ Poll for room to become active
       let attempts = 0;
       while (attempts < 30) {
         const res = await apiClient.get(`/calls/status/${roomId}`);
@@ -83,10 +87,8 @@ export default function CallPage() {
         if (status === "active") break;
 
         // ✅ KEY FIX: if ended, wait 2 more seconds then confirm before rejecting
-        // Avoids false rejection from stale DB reads right after insert
         if (status === "ended") {
           if (attempts < 2) {
-            // too early — DB might not have settled, keep polling
             await new Promise(r => setTimeout(r, 1000));
             attempts++;
             continue;

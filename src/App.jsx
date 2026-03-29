@@ -8,11 +8,12 @@ import CallPage from './pages/CallPage'
 import WalletPage from './pages/WalletPage'
 import ProfilePage from './pages/ProfilePage'
 import CreatorDashboard from './pages/CreatorDashboard'
-import AdminDashboard from './pages/AdminDashboard'
+import AdminDashboard from './pages/admin/AdminDashboard'  // ✅ CHANGED
 import TransactionPage from './pages/TransactionPage'
 import ChatPage from './pages/ChatPage'
 import NotificationPage from './pages/NotificationPage'
 import CreatorCallPage from './pages/CreatorCallPage'
+import AdminOffers from './pages/AdminOffers'
 import './index.css'
 
 function ProtectedRoute({ children }) {
@@ -40,6 +41,7 @@ export default function App() {
       <Route path="/profile" element={<ProtectedRoute><ProfilePage /></ProtectedRoute>} />
       <Route path="/creator-dashboard" element={<ProtectedRoute><CreatorDashboard /></ProtectedRoute>} />
       <Route path="/admin" element={<ProtectedRoute><AdminDashboard /></ProtectedRoute>} />
+      <Route path="/admin/offers" element={<ProtectedRoute><AdminOffers /></ProtectedRoute>} />
       <Route path="/transactions" element={<ProtectedRoute><TransactionPage /></ProtectedRoute>} />
       <Route path="/notifications" element={<NotificationPage />} />
     </Routes>

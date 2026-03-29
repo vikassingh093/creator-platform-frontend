@@ -2,13 +2,14 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { walletAPI } from '../api/wallet'
 
+const CREDIT_TYPES = ['add_money', 'signup_bonus', 'first_deposit_bonus', 'event_bonus', 'promo_bonus', 'refund', 'adjustment']
+
 export default function TransactionPage() {
   const navigate = useNavigate()
   const [filter, setFilter] = useState('all')
   const [transactions, setTransactions] = useState([])
   const [loading, setLoading] = useState(true)
 
-  // ✅ Fetch real transactions from API
   useEffect(() => {
     const fetchTransactions = async () => {
       try {
@@ -29,15 +30,18 @@ export default function TransactionPage() {
     { id: 'spent', label: 'Spent' },
   ]
 
-  // ✅ Filter: spent = everything except add_money
+  const isCredit = (t) => CREDIT_TYPES.includes(t.type) || t.transaction_type === 'credit'
+
   const filteredTransactions = transactions.filter(t => {
     if (filter === 'all') return true
-    if (filter === 'add_money') return t.transaction_type === 'credit'
-    if (filter === 'spent') return t.transaction_type === 'debit'
+    if (filter === 'add_money') return isCredit(t)
+    if (filter === 'spent') return !isCredit(t)
     return true
   })
 
   const getTransactionIcon = (t) => {
+    const type = t.type || ''
+    if (type.includes('bonus') || type.includes('promo')) return '🎁'
     const desc = t.description?.toLowerCase() || ''
     if (desc.includes('call')) return '📞'
     if (desc.includes('chat')) return '💬'
@@ -46,14 +50,13 @@ export default function TransactionPage() {
     return '💳'
   }
 
-  // ✅ Real totals from API data
   const totalAdded = transactions
-    .filter(t => t.transaction_type === 'credit')
-    .reduce((sum, t) => sum + Number(t.amount), 0)
+    .filter(t => isCredit(t))
+    .reduce((sum, t) => sum + Math.abs(Number(t.amount)), 0)
 
   const totalSpent = transactions
-    .filter(t => t.transaction_type === 'debit')
-    .reduce((sum, t) => sum + Number(t.amount), 0)
+    .filter(t => !isCredit(t))
+    .reduce((sum, t) => sum + Math.abs(Number(t.amount)), 0)
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -69,7 +72,6 @@ export default function TransactionPage() {
           <h1 className="text-xl font-bold">Transaction History</h1>
         </div>
 
-        {/* ✅ Real totals */}
         <div className="grid grid-cols-2 gap-3">
           <div className="bg-white bg-opacity-20 rounded-2xl p-3 text-center">
             <p className="text-white text-xs mb-1">Total Added</p>
@@ -130,17 +132,17 @@ export default function TransactionPage() {
                   })}
                 </p>
                 <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
-                  transaction.transaction_type === 'credit'
+                  isCredit(transaction)
                     ? 'bg-green-100 text-green-600'
                     : 'bg-red-100 text-red-600'
                 }`}>
-                  {transaction.transaction_type === 'credit' ? 'Credit' : 'Debit'}
+                  {isCredit(transaction) ? 'Credit' : 'Debit'}
                 </span>
               </div>
               <p className={`font-bold text-base flex-shrink-0 ${
-                transaction.transaction_type === 'credit' ? 'text-green-500' : 'text-red-500'
+                isCredit(transaction) ? 'text-green-500' : 'text-red-500'
               }`}>
-                {transaction.transaction_type === 'credit' ? '+' : '-'}₹{Number(transaction.amount).toFixed(2)}
+                {isCredit(transaction) ? '+' : '-'}₹{Math.abs(Number(transaction.amount)).toFixed(2)}
               </p>
             </div>
           ))

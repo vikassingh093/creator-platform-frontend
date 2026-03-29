@@ -22,7 +22,6 @@ export default function BottomNav() {
 
   const tabs = [
     { path: '/', icon: '🏠', label: 'Home' },
-    { path: '/search', icon: '🔍', label: 'Search' },
     { path: '/notifications', icon: '🔔', label: 'Alerts', badge: unreadCount },
     { path: '/wallet', icon: '💰', label: 'Wallet' },
     { path: '/profile', icon: '👤', label: 'Profile' },

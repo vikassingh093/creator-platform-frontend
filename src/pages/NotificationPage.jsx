@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { notificationsAPI } from '../api/notifications';
-import apiClient from '../api/client';  // ✅ ADD THIS
+import apiClient from '../api/client';
 import BottomNav from '../components/BottomNav';
 
 export default function NotificationPage() {
@@ -46,7 +46,14 @@ export default function NotificationPage() {
     }
   };
 
+  /**
+   * ✅ Helper: Delay utility — waits N ms before resolving.
+   * Used to prevent stale DB reads after initiating a call-back.
+   */
+  const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
   const handleNotificationClick = async (notification) => {
+    // ── Mark as read if unread ──
     if (!notification.is_read) {
       await notificationsAPI.markRead(notification.id)
       setNotifications(prev =>
@@ -55,53 +62,59 @@ export default function NotificationPage() {
       setUnreadCount(prev => Math.max(0, prev - 1))
     }
 
-    // 🚫 MISSED CALL CALLBACK — TEMPORARILY DISABLED
-    // TODO: Re-enable when call-back flow is fully tested
-    // The issue: after callback, new room polled too fast → got "ended" status
-    // from stale DB read → immediate rejection screen shown again.
-    // Fix needed before re-enabling:
-    //   1. Add proper delay before polling new room
-    //   2. Test full flow: tap notification → call initiates → creator accepts → active
-    //
-    // if (notification.type === 'call' && notification.reference_id?.startsWith('missed_call_')) {
-    //   const parts = notification.reference_id.split('_')
-    //   // format: missed_call_{creatorId}_{callType}
-    //   const creatorId = Number(parts[2])
-    //   const callType = parts[3] || 'audio'
-    //   try {
-    //     const res = await apiClient.post('/calls/initiate', {
-    //       creator_id: creatorId,
-    //       call_type: callType
-    //     })
-    //     const data = res.data
-    //     navigate('/call', {
-    //       state: {
-    //         roomId: data.room_id,
-    //         channelName: data.channel_name,
-    //         token: data.token,
-    //         uid: data.uid,
-    //         callType: callType,
-    //         creatorName: data.creator?.name || 'Creator',
-    //         ratePerMinute: data.rate_per_minute,
-    //         balance: data.balance,
-    //         creatorId: creatorId,
-    //       }
-    //     })
-    //   } catch (err) {
-    //     alert(err.response?.data?.detail || 'Creator is offline or insufficient balance')
-    //   }
-    //   return
-    // }
-
-    // ✅ Missed call notification → go to creator profile instead (call back disabled)
+    // ── ✅ MISSED CALL CALLBACK — RE-ENABLED with 2s delay fix ──
+    // Fix applied: 2-second delay after initiate prevents polling stale "ended" room.
+    // Flow: tap notification → POST /calls/initiate → wait 2s → navigate to CallPage
     if (notification.type === 'call' && notification.reference_id?.startsWith('missed_call_')) {
       const parts = notification.reference_id.split('_')
+      // format: missed_call_{creatorId}_{callType}
       const creatorId = Number(parts[2])
-      if (creatorId) navigate(`/creator/${creatorId}`)
+      const callType = parts[3] || 'audio'
+
+      // Validate creatorId before attempting callback
+      if (!creatorId || isNaN(creatorId)) {
+        console.error('Invalid creator ID in missed call notification:', notification.reference_id)
+        navigate('/home')
+        return
+      }
+
+      try {
+        // Step 1: Initiate the call
+        const res = await apiClient.post('/calls/initiate', {
+          creator_id: creatorId,
+          call_type: callType
+        })
+        const data = res.data
+
+        // Step 2: Wait 2 seconds for DB to fully commit the new room
+        // This prevents the CallPage from polling too fast and reading
+        // a stale "ended" status from a previous room.
+        await delay(2000)
+
+        // Step 3: Navigate to call page with fresh room data
+        navigate('/call', {
+          state: {
+            roomId: data.room_id,
+            channelName: data.channel_name,
+            token: data.token,
+            uid: data.uid,
+            callType: callType,
+            creatorName: data.creator?.name || 'Creator',
+            ratePerMinute: data.rate_per_minute,
+            balance: data.balance,
+            creatorId: creatorId,
+          }
+        })
+      } catch (err) {
+        // Show user-friendly error message
+        const errorMsg = err.response?.data?.detail || 'Creator is offline or insufficient balance'
+        alert(errorMsg)
+        console.error('Call-back failed:', errorMsg)
+      }
       return
     }
 
-    // ✅ existing navigation
+    // ── Existing navigation logic (unchanged) ──
     if (notification.type === 'chat' && notification.reference_id) {
       const roomId = notification.reference_id.replace('room_', '')
       navigate(`/chat/room/${roomId}`)

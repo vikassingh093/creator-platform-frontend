@@ -109,8 +109,9 @@ export default function WalletPage() {
     }
   }
 
-  // ✅ Backend uses type: "add_money" for credits, "chat"/"call"/etc for debits
-  const isCredit = (tx) => tx.type === 'add_money'
+  // ✅ Backend uses type: "add_money" for credits, bonus types are also credits
+  const CREDIT_TYPES = ['add_money', 'signup_bonus', 'first_deposit_bonus', 'event_bonus', 'promo_bonus', 'refund', 'adjustment']
+  const isCredit = (tx) => CREDIT_TYPES.includes(tx.type)
 
   const filteredTransactions = (transactions || []).filter(tx => {
     if (activeTab === 'all') return true
@@ -120,6 +121,8 @@ export default function WalletPage() {
   })
 
   const getTransactionIcon = (tx) => {
+    const type = tx.type || ''
+    if (type.includes('bonus') || type.includes('promo')) return '🎁'
     const desc = (tx.description || '').toLowerCase()
     if (desc.includes('call') || desc.includes('audio') || desc.includes('video')) return '📞'
     if (desc.includes('chat')) return '💬'
