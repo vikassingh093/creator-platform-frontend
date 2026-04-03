@@ -2,7 +2,8 @@ import { useState, useEffect } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { creatorsAPI } from '../api/creators'
 import useAuthStore from '../store/authStore'
-import CallModal from '../components/CallModal'  // ✅ FIXED: correct path
+import CallModal from '../components/CallModal'
+import { getPhotoUrl } from '../utils/photoUrl'
 
 export default function CreatorProfilePage() {
   const { id } = useParams()
@@ -30,6 +31,9 @@ export default function CreatorProfilePage() {
           creatorsAPI.getCreatorContent(id),
         ])
         setCreator(creatorData.creator)
+        console.log('🔍 Creator data:', creatorData.creator)
+        console.log('🔍 profile_photo raw:', creatorData.creator?.profile_photo)
+        console.log('🔍 getPhotoUrl result:', getPhotoUrl(creatorData.creator?.profile_photo))
         setReviews(reviewsData.reviews)
         setContent(contentData.content)
       } catch (err) {
@@ -90,9 +94,9 @@ export default function CreatorProfilePage() {
       {/* Header Photo */}
       <div className="relative">
         <div className="w-full h-72 bg-[#FFF8E1] overflow-hidden">
-          {creator.profile_photo ? (
+          {getPhotoUrl(creator.profile_photo) ? (
             <img
-              src={creator.profile_photo}
+              src={getPhotoUrl(creator.profile_photo)}
               alt={creator.name}
               className="w-full h-full object-cover"
               onError={(e) => { e.target.style.display = 'none' }}
@@ -170,8 +174,8 @@ export default function CreatorProfilePage() {
       {/* Call Modal */}
       {showCallModal && (
         <CallModal
-          creatorId={creator.id}          // ✅ FIXED: pass correct props
-          creatorName={creator.name}       // ✅ FIXED: pass correct props
+          creatorId={creator.id}
+          creatorName={creator.name}
           onClose={() => setShowCallModal(false)}
         />
       )}

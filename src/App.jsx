@@ -14,6 +14,8 @@ import ChatPage from './pages/ChatPage'
 import NotificationPage from './pages/NotificationPage'
 import CreatorCallPage from './pages/CreatorCallPage'
 import AdminOffers from './pages/AdminOffers'
+import TermsPage from './pages/TermsPage'
+import HelpPage from './pages/HelpPage'
 import './index.css'
 
 function ProtectedRoute({ children }) {
@@ -44,6 +46,8 @@ export default function App() {
       <Route path="/admin/offers" element={<ProtectedRoute><AdminOffers /></ProtectedRoute>} />
       <Route path="/transactions" element={<ProtectedRoute><TransactionPage /></ProtectedRoute>} />
       <Route path="/notifications" element={<NotificationPage />} />
+      <Route path="/terms" element={<TermsPage />} />
+      <Route path="/help" element={<HelpPage />} />
     </Routes>
   )
 }

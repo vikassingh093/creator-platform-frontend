@@ -4,6 +4,8 @@ import { creatorsAPI } from '../api/creators'
 import useAuthStore from '../store/authStore'
 import apiClient from '../api/client'
 import BottomNav from '../components/BottomNav'
+import AVATARS from '../constants/avatars'
+import { getPhotoUrl } from '../utils/photoUrl'
 
 // ✅ Only 3 categories
 const CATEGORIES = ['All', '🔮 Astrology', '🎭 Entertainment', '👗 Fashion']
@@ -60,8 +62,9 @@ const MENU_ITEMS = [
 
 const MENU_EXTRAS = [
   { icon: '👥', label: 'Invite Friends', action: 'invite', desc: 'Earn ₹100 per referral' },
+  { icon: '❓', label: 'Help & FAQ', path: '/help', desc: 'Get answers fast' },
+  { icon: '📋', label: 'Terms & Conditions', path: '/terms', desc: 'Our policies' },
   { icon: '⭐', label: 'Rate Us', action: 'rate', desc: 'Love us? Rate 5 stars!' },
-  { icon: '📧', label: 'Help & Support', action: 'support', desc: 'Get help anytime' },
 ]
 
 export default function HomePage() {
@@ -137,8 +140,6 @@ export default function HomePage() {
       handleShare()
     } else if (item.action === 'rate') {
       alert('Thanks for rating us! ⭐')
-    } else if (item.action === 'support') {
-      window.open('mailto:support@creatorhub.app', '_blank')
     }
   }
 
@@ -254,9 +255,18 @@ export default function HomePage() {
             </button>
 
             <div className="flex items-center gap-3.5">
-              <div className="w-16 h-16 bg-[#FFC629] rounded-2xl flex items-center justify-center text-[#1D1D1D] text-2xl font-extrabold shadow-lg shadow-[#FFC629]/20">
-                {user?.name?.charAt(0) || '?'}
-              </div>
+              {(() => {
+                const avatar = user?.avatar_id ? AVATARS.find(a => a.id === user.avatar_id) : null
+                return avatar ? (
+                  <div className="w-16 h-16 rounded-2xl overflow-hidden shadow-lg shadow-[#FFC629]/20 bg-white">
+                    <img src={avatar.img} alt={avatar.label} className="w-full h-full object-cover" />
+                  </div>
+                ) : (
+                  <div className="w-16 h-16 bg-[#FFC629] rounded-2xl flex items-center justify-center text-[#1D1D1D] text-2xl font-extrabold shadow-lg shadow-[#FFC629]/20">
+                    {user?.name?.charAt(0) || '?'}
+                  </div>
+                )
+              })()}
               <div className="flex-1 min-w-0">
                 <h3 className="font-extrabold text-white text-lg truncate leading-tight">{user?.name || 'Guest'}</h3>
                 <p className="text-white/50 text-xs truncate mt-0.5">{user?.phone || user?.email || ''}</p>
@@ -462,15 +472,7 @@ export default function HomePage() {
                 {/* Photo */}
                 <div className="relative">
                   <div className="w-full h-36 bg-[#FFF8E1] flex items-center justify-center text-[#FFA500] text-4xl font-extrabold">
-                    {creator.profile_photo ? (
-                      <img
-                        src={creator.profile_photo}
-                        alt={creator.name}
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      creator.name?.charAt(0)
-                    )}
+                    <img src={getPhotoUrl(creator.profile_photo)} alt={creator.name} className="w-full h-full object-cover" />
                   </div>
                   {/* Online Badge */}
                   <div className={`absolute top-2 right-2 px-2 py-0.5 rounded-full text-xs font-bold ${

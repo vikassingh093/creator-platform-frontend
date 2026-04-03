@@ -8,10 +8,12 @@ import WithdrawalsTab from './tabs/WithdrawalsTab'
 import TransactionsTab from './tabs/TransactionsTab'
 import RefundTab from './tabs/RefundTab'
 import OffersTab from './tabs/OffersTab'
+import PhotoApprovalsTab from './tabs/PhotoApprovalsTab'
 
 const TABS = [
   { key: 'stats', label: '📊 Stats', icon: '📊' },
   { key: 'creators', label: '🎨 Creators', icon: '🎨' },
+  { key: 'photos', label: '📸 Photos', icon: '📸' },
   { key: 'users', label: '👥 Users', icon: '👥' },
   { key: 'transactions', label: '📋 Txns', icon: '📋' },
   { key: 'withdrawals', label: '💸 Payouts', icon: '💸' },
@@ -35,6 +37,7 @@ export default function AdminDashboard() {
     switch (activeTab) {
       case 'stats': return <StatsTab />
       case 'creators': return <CreatorsTab />
+      case 'photos': return <PhotoApprovalsTab />
       case 'users': return <UsersTab />
       case 'transactions': return <TransactionsTab />
       case 'withdrawals': return <WithdrawalsTab />

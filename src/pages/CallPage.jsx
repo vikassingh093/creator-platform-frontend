@@ -1,19 +1,21 @@
 import { useState, useEffect, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import apiClient from "../api/client";
+import useAuthStore from "../store/authStore";
 
 export default function CallPage() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { user } = useAuthStore();
 
-  // ✅ FIX: Read from sessionStorage if navigated via window.location.href
+  // ✅ Read from sessionStorage if navigated via window.location.href
   let locationState = location.state || {};
   if (!locationState.roomId) {
     try {
-      const saved = sessionStorage.getItem("callState")
+      const saved = sessionStorage.getItem("callState");
       if (saved) {
-        locationState = JSON.parse(saved)
-        sessionStorage.removeItem("callState")  // ✅ clear after reading
+        locationState = JSON.parse(saved);
+        sessionStorage.removeItem("callState");
       }
     } catch (e) {}
   }
@@ -27,17 +29,16 @@ export default function CallPage() {
   const ratePerMinute = state.ratePerMinute || 20;
   const uid = state.uid || 1;
 
-  // ✅ ALWAYS use .env variable — never use appId from API response
   const appId = import.meta.env.VITE_AGORA_APP_ID || "";
-
-  // ✅ Add this debug line
-  console.log("🔑 AGORA APP ID:", appId, "| Valid:", appId.length === 32)
 
   const [duration, setDuration] = useState(0);
   const [callStatus, setCallStatus] = useState("connecting");
   const [balance, setBalance] = useState(state.balance || 0);
   const [isMuted, setIsMuted] = useState(false);
+  const [isVideoOff, setIsVideoOff] = useState(false);
   const [endInfo, setEndInfo] = useState(null);
+  const [lowBalanceWarnings, setLowBalanceWarnings] = useState(0);
+  const [showLowBalanceAlert, setShowLowBalanceAlert] = useState(false);
 
   const clientRef = useRef(null);
   const localAudioRef = useRef(null);
@@ -47,13 +48,17 @@ export default function CallPage() {
   const durationRef = useRef(0);
   const hasEndedRef = useRef(false);
   const timerStartedRef = useRef(false);
+  const lowBalanceCountRef = useRef(0);
+
+  // ✅ Determine if current user is the creator or customer
+  const isCreator = user?.user_type === "creator";
 
   useEffect(() => {
     if (!roomId) {
       navigate(-1);
       return;
     }
-    console.log("📞 CallPage state:", { roomId, channelName, uid, appId, hasToken: !!token });
+    console.log("📞 CallPage state:", { roomId, channelName, uid, appId, hasToken: !!token, isCreator });
     startCall();
     return () => cleanup();
   }, []);
@@ -69,15 +74,8 @@ export default function CallPage() {
   const startCall = async () => {
     try {
       setCallStatus("connecting");
+      await new Promise((r) => setTimeout(r, 500));
 
-      // ✅ Small delay to let backend settle before polling
-      await new Promise(r => setTimeout(r, 500));
-
-      // ✅ If this is a creator-initiated call that the customer already accepted,
-      //    the room is already 'active' — skip the long polling
-      const isAlreadyAccepted = state.initiatedBy === 'creator';
-
-      // ✅ Poll for room to become active
       let attempts = 0;
       while (attempts < 30) {
         const res = await apiClient.get(`/calls/status/${roomId}`);
@@ -86,10 +84,9 @@ export default function CallPage() {
 
         if (status === "active") break;
 
-        // ✅ KEY FIX: if ended, wait 2 more seconds then confirm before rejecting
         if (status === "ended") {
           if (attempts < 2) {
-            await new Promise(r => setTimeout(r, 1000));
+            await new Promise((r) => setTimeout(r, 1000));
             attempts++;
             continue;
           }
@@ -97,8 +94,7 @@ export default function CallPage() {
           return;
         }
 
-        // status === "ringing" → keep waiting
-        await new Promise(r => setTimeout(r, 1000));
+        await new Promise((r) => setTimeout(r, 1000));
         attempts++;
       }
 
@@ -108,10 +104,6 @@ export default function CallPage() {
       }
 
       console.log("✅ Room active - joining Agora now");
-      console.log("🔍 AppId:", appId, "| Length:", appId.length);
-      console.log("🔍 Channel:", channelName);
-      console.log("🔍 Token:", token ? token.substring(0, 20) + "..." : "NULL");
-      console.log("🔍 UID:", uid);
 
       if (!appId || appId.length < 10) {
         console.warn("⚠️ No valid VITE_AGORA_APP_ID — using mock mode");
@@ -143,7 +135,6 @@ export default function CallPage() {
         console.log("🔗 Connection state:", state);
       });
 
-      // ✅ Join with correct uid=1 for user
       console.log("🚀 Joining Agora channel...");
       await client.join(appId, channelName, token || null, uid);
       console.log("✅ Joined Agora successfully with uid:", uid);
@@ -160,11 +151,10 @@ export default function CallPage() {
         await client.publish([audioTrack]);
       }
 
-      console.log("✅ Published audio track");
+      console.log("✅ Published tracks");
       setCallStatus("active");
       startTimer();
       startTick();
-
     } catch (err) {
       console.error("❌ Call failed:", err.message, err);
       setCallStatus("error");
@@ -176,7 +166,7 @@ export default function CallPage() {
     timerStartedRef.current = true;
     timerRef.current = setInterval(() => {
       durationRef.current += 1;
-      setDuration(d => d + 1);
+      setDuration((d) => d + 1);
     }, 1000);
   };
 
@@ -185,10 +175,23 @@ export default function CallPage() {
       try {
         const res = await apiClient.post("/calls/tick", { room_id: Number(roomId) });
         const data = res.data;
+
         if (data.balance !== undefined) setBalance(data.balance);
+
+        // ✅ Auto-end if backend says so
         if (data.should_end) {
           console.log("💸 Balance exhausted - ending call");
-          endCall();
+          endCall("insufficient_balance");
+          return;
+        }
+
+        // ✅ Low balance warning — only for CUSTOMER, max 3 times
+        if (!isCreator && data.low_balance && lowBalanceCountRef.current < 3) {
+          lowBalanceCountRef.current += 1;
+          setLowBalanceWarnings(lowBalanceCountRef.current);
+          setShowLowBalanceAlert(true);
+          // Auto-hide after 3 seconds
+          setTimeout(() => setShowLowBalanceAlert(false), 3000);
         }
       } catch (e) {
         console.error("Tick error:", e);
@@ -196,7 +199,7 @@ export default function CallPage() {
     }, 5000);
   };
 
-  const endCall = async () => {
+  const endCall = async (reason) => {
     if (hasEndedRef.current) return;
     hasEndedRef.current = true;
 
@@ -206,12 +209,12 @@ export default function CallPage() {
     try {
       const res = await apiClient.post("/calls/end", {
         room_id: Number(roomId),
-        duration: finalDuration
+        duration: finalDuration,
       });
-      setEndInfo({ duration: finalDuration, ...res.data });
+      setEndInfo({ duration: finalDuration, reason, ...res.data });
     } catch (e) {
       console.error("❌ End call error:", e);
-      setEndInfo({ duration: finalDuration });
+      setEndInfo({ duration: finalDuration, reason });
     }
 
     setCallStatus("ended");
@@ -220,6 +223,12 @@ export default function CallPage() {
   const toggleMute = () => {
     localAudioRef.current?.setEnabled(isMuted);
     setIsMuted(!isMuted);
+  };
+
+  const toggleVideo = () => {
+    if (callType !== "video") return;
+    localVideoRef.current?.setEnabled(isVideoOff);
+    setIsVideoOff(!isVideoOff);
   };
 
   const formatTime = (sec) => {
@@ -234,7 +243,15 @@ export default function CallPage() {
       <div className="min-h-screen bg-gray-900 flex items-center justify-center p-6">
         <div className="text-center text-white w-full max-w-sm">
           <div className="text-7xl mb-4">📵</div>
-          <h2 className="text-2xl font-bold mb-4">Call Ended</h2>
+          <h2 className="text-2xl font-bold mb-2">Call Ended</h2>
+
+          {/* ✅ Show reason if balance ran out */}
+          {endInfo?.reason === "insufficient_balance" && !isCreator && (
+            <p className="text-red-400 text-sm mb-4">
+              ⚠️ Call ended due to insufficient balance
+            </p>
+          )}
+
           {endInfo && endInfo.duration > 0 && (
             <div className="bg-gray-800 rounded-2xl p-4 mb-6 space-y-2 text-left">
               <h3 className="text-center font-bold text-purple-300 mb-3">📊 Summary</h3>
@@ -242,6 +259,12 @@ export default function CallPage() {
                 <span className="text-gray-400">Duration</span>
                 <span className="font-bold">{formatTime(endInfo.duration)}</span>
               </div>
+              {endInfo.total_cost > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Total Cost</span>
+                  <span className="font-bold text-yellow-400">₹{endInfo.total_cost}</span>
+                </div>
+              )}
             </div>
           )}
           <button
@@ -252,54 +275,18 @@ export default function CallPage() {
           </button>
         </div>
       </div>
-    )
+    );
   }
 
   // ─── REJECTED / TIMEOUT ───────────────────────────────────
   if (callStatus === "rejected" || callStatus === "timeout") {
-
-    // 🚫 CALL BACK FEATURE — TEMPORARILY DISABLED
-    // TODO: Re-enable this when call-back flow is fully tested
-    // The issue was: after call-back, new room polled too fast and got "ended"
-    // status from stale DB read, causing immediate rejection screen again.
-    // Fix needed before re-enabling:
-    //   1. Add proper delay before polling new room
-    //   2. Ensure creator polling picks up new room correctly
-    //   3. Test full flow: user calls → rejected → calls back → creator accepts → active
-    //
-    // const handleCallBack = async () => {
-    //   try {
-    //     const res = await apiClient.post("/calls/initiate", {
-    //       creator_id: state.creatorId,
-    //       call_type: callType
-    //     })
-    //     const data = res.data
-    //     console.log("📞 Call back initiated:", data)
-    //     sessionStorage.setItem("callState", JSON.stringify({
-    //       roomId: data.room_id,
-    //       channelName: data.channel_name,
-    //       token: data.token,
-    //       uid: data.uid,
-    //       callType: callType,
-    //       creatorName: creatorName,
-    //       ratePerMinute: data.rate_per_minute,
-    //       balance: data.balance,
-    //       creatorId: state.creatorId,
-    //     }))
-    //     window.location.href = "/call"
-    //   } catch (err) {
-    //     alert(err.response?.data?.detail || "Failed to call back")
-    //   }
-    // }
-
-    // ✅ Auto-redirect to creator profile after 5 seconds
     setTimeout(() => {
       if (state.creatorId) {
-        navigate(`/creator/${state.creatorId}`, { replace: true })
+        navigate(`/creator/${state.creatorId}`, { replace: true });
       } else {
-        navigate(-1)
+        navigate(-1);
       }
-    }, 5000)
+    }, 5000);
 
     return (
       <div className="min-h-screen bg-gray-900 flex items-center justify-center p-6">
@@ -313,34 +300,22 @@ export default function CallPage() {
               ? "Creator declined your call."
               : "Creator did not respond."}
           </p>
-
-          {/* 🚫 CALL BACK BUTTON — TEMPORARILY DISABLED (see comment above) */}
-          {/* {state.creatorId && (
-            <button
-              onClick={handleCallBack}
-              className="w-full bg-green-600 py-4 rounded-2xl font-bold text-lg mb-3 flex items-center justify-center gap-2 active:scale-95"
-            >
-              📞 Call Back
-            </button>
-          )} */}
-
-          {/* ✅ Go Back → navigates back to creator profile page */}
           <button
-            onClick={() => state.creatorId
-              ? navigate(`/creator/${state.creatorId}`, { replace: true })
-              : navigate(-1)
+            onClick={() =>
+              state.creatorId
+                ? navigate(`/creator/${state.creatorId}`, { replace: true })
+                : navigate(-1)
             }
             className="w-full bg-gray-700 py-4 rounded-2xl font-bold text-lg"
           >
             Go Back
           </button>
-
           <p className="text-gray-500 text-sm mt-4">
             Returning to creator profile in 5 seconds...
           </p>
         </div>
       </div>
-    )
+    );
   }
 
   // ─── ERROR ────────────────────────────────────────────────
@@ -350,80 +325,183 @@ export default function CallPage() {
         <div className="text-center text-white">
           <div className="text-7xl mb-4">❌</div>
           <h2 className="text-2xl font-bold mb-2">Call Failed</h2>
-          <p className="text-red-400 mb-6">Failed to connect audio. Please try again.</p>
-          <button
-            onClick={() => navigate(-1)}
-            className="bg-purple-600 px-6 py-3 rounded-xl font-bold"
-          >
+          <p className="text-red-400 mb-6">Failed to connect. Please try again.</p>
+          <button onClick={() => navigate(-1)} className="bg-purple-600 px-6 py-3 rounded-xl font-bold">
             Go Back
           </button>
         </div>
       </div>
-    )
+    );
   }
 
   // ─── ACTIVE CALL UI ───────────────────────────────────────
+
+  // ✅ VIDEO CALL — fullscreen layout with overlay controls
+  if (callType === "video") {
+    return (
+      <div className="fixed inset-0 bg-black z-50">
+        {/* ✅ Remote video — FULLSCREEN */}
+        <div id="remote-video" className="absolute inset-0 w-full h-full bg-black" />
+
+        {/* ✅ Local video — small PIP in top-right */}
+        <div
+          id="local-video"
+          className="absolute top-4 right-4 w-28 h-36 bg-gray-800 rounded-2xl overflow-hidden shadow-2xl border-2 border-white/20 z-20"
+        />
+
+        {/* ✅ Low balance alert toast — CUSTOMER only */}
+        {showLowBalanceAlert && !isCreator && (
+          <div className="absolute top-4 left-4 right-36 z-30 animate-pulse">
+            <div className="bg-red-600/90 backdrop-blur-sm text-white text-xs font-bold px-4 py-2 rounded-xl shadow-lg">
+              ⚠️ Low balance! Only ₹{balance} left. Call will end soon.
+            </div>
+          </div>
+        )}
+
+        {/* ✅ Top overlay — name + timer */}
+        <div className="absolute top-0 left-0 right-0 z-20 bg-gradient-to-b from-black/70 to-transparent pt-12 pb-8 px-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <h2 className="text-white font-bold text-lg">{creatorName}</h2>
+              <p className="text-white/60 text-xs capitalize">{callType} Call</p>
+            </div>
+            <div className="text-right">
+              {callStatus === "connecting" ? (
+                <p className="text-yellow-400 animate-pulse text-sm">Connecting...</p>
+              ) : (
+                <p className="text-green-400 font-mono font-bold text-xl">
+                  {formatTime(duration)}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* ✅ Creator sees user balance | Customer sees nothing */}
+        {callStatus === "active" && isCreator && (
+          <div className="absolute top-24 left-0 right-0 z-20 flex justify-center">
+            <div className="bg-black/50 backdrop-blur-sm rounded-full px-4 py-1.5 flex items-center gap-2">
+              <span className="text-white/70 text-xs">User Balance:</span>
+              <span className={`text-sm font-bold ${balance < ratePerMinute ? 'text-red-400' : 'text-green-400'}`}>
+                ₹{balance}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* ✅ Bottom overlay — controls */}
+        <div className="absolute bottom-0 left-0 right-0 z-20 bg-gradient-to-t from-black/80 to-transparent pb-10 pt-16 px-6">
+          {/* Rate info pill — creator sees balance, customer doesn't */}
+          <div className="flex justify-center mb-6">
+            <div className="bg-white/10 backdrop-blur-sm rounded-full px-4 py-1.5 flex items-center gap-2">
+              <span className="text-white/70 text-xs">₹{ratePerMinute}/min</span>
+            </div>
+          </div>
+
+          {/* Control buttons */}
+          <div className="flex items-center justify-center gap-6">
+            {/* Mute */}
+            <button
+              onClick={toggleMute}
+              className={`w-14 h-14 rounded-full flex items-center justify-center text-xl shadow-lg transition active:scale-90 ${
+                isMuted ? "bg-red-500" : "bg-white/20 backdrop-blur-sm"
+              }`}
+            >
+              {isMuted ? "🔇" : "🎙️"}
+            </button>
+
+            {/* Video toggle */}
+            <button
+              onClick={toggleVideo}
+              className={`w-14 h-14 rounded-full flex items-center justify-center text-xl shadow-lg transition active:scale-90 ${
+                isVideoOff ? "bg-red-500" : "bg-white/20 backdrop-blur-sm"
+              }`}
+            >
+              {isVideoOff ? "📷" : "📹"}
+            </button>
+
+            {/* End call */}
+            <button
+              onClick={() => endCall()}
+              className="w-16 h-16 bg-red-600 rounded-full flex items-center justify-center text-3xl shadow-2xl active:scale-90 transition"
+            >
+              📵
+            </button>
+
+            {/* Spacer for symmetry */}
+            <div className="w-14 h-14" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ✅ AUDIO CALL — centered layout (no video)
   return (
     <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-between p-6">
-      {callType === "video" && (
-        <div className="relative w-full max-w-md h-64 bg-black rounded-2xl overflow-hidden mb-4">
-          <div id="remote-video" className="w-full h-full" />
-          <div id="local-video" className="absolute bottom-2 right-2 w-24 h-20 bg-gray-800 rounded-lg" />
+
+      {/* ✅ Low balance alert toast — CUSTOMER only */}
+      {showLowBalanceAlert && !isCreator && (
+        <div className="fixed top-6 left-4 right-4 z-50 animate-pulse">
+          <div className="bg-red-600/90 backdrop-blur-sm text-white text-sm font-bold px-4 py-3 rounded-2xl shadow-lg text-center">
+            ⚠️ Low balance! Only ₹{balance} left. Call will end soon.
+          </div>
         </div>
       )}
 
-      <div className="text-center mt-8 flex-1 flex flex-col items-center justify-center">
-        <div className="w-24 h-24 rounded-full bg-gradient-to-br from-pink-500 to-purple-600 flex items-center justify-center text-4xl mb-4">
-          🎭
+      <div className="text-center mt-16 flex-1 flex flex-col items-center justify-center">
+        <div className="w-28 h-28 rounded-full bg-gradient-to-br from-green-500 to-emerald-600 flex items-center justify-center text-5xl mb-6 shadow-lg shadow-green-500/30">
+          🎙️
         </div>
         <h1 className="text-white text-2xl font-bold">{creatorName}</h1>
-        <p className="text-purple-300 text-sm capitalize mt-1">{callType} Call</p>
+        <p className="text-green-300 text-sm capitalize mt-1">Audio Call</p>
 
         <div className="mt-6">
-          {callStatus === "connecting" && (
+          {callStatus === "connecting" ? (
             <p className="text-yellow-400 animate-pulse text-lg">🔄 Connecting...</p>
-          )}
-          {callStatus === "active" && (
+          ) : (
             <div>
-              <p className="text-green-400 text-3xl font-mono font-bold">
+              <p className="text-green-400 text-4xl font-mono font-bold">
                 {formatTime(duration)}
               </p>
-              <p className="text-gray-400 text-sm mt-1">
-                ₹{ratePerMinute}/min • Balance: ₹{balance}
+              <p className="text-gray-500 text-xs mt-2">
+                ₹{ratePerMinute}/min
               </p>
+
+              {/* ✅ Creator sees user balance */}
+              {isCreator && (
+                <div className="mt-3 bg-gray-800 rounded-full px-4 py-1.5 inline-flex items-center gap-2">
+                  <span className="text-gray-400 text-xs">User Balance:</span>
+                  <span className={`text-sm font-bold ${balance < ratePerMinute ? 'text-red-400' : 'text-green-400'}`}>
+                    ₹{balance}
+                  </span>
+                </div>
+              )}
             </div>
           )}
         </div>
       </div>
 
-      {/* Bottom pill info */}
-      {callStatus === "active" && (
-        <div className="bg-gray-800 rounded-full px-5 py-2 mb-4 flex items-center gap-2">
-          <span className="text-white text-sm">🎙 ₹{ratePerMinute}/min</span>
-          <span className="text-gray-400">•</span>
-          <span className="text-green-400 text-sm font-bold">₹{balance} left</span>
-        </div>
-      )}
-
-      <div className="flex items-center gap-8 mb-8">
+      {/* Bottom controls */}
+      <div className="flex items-center gap-8 mb-12">
         <button
           onClick={toggleMute}
-          className={`w-14 h-14 rounded-full flex items-center justify-center text-xl shadow-lg ${
-            isMuted ? "bg-red-600" : "bg-gray-700"
+          className={`w-16 h-16 rounded-full flex items-center justify-center text-2xl shadow-lg transition active:scale-90 ${
+            isMuted ? "bg-red-500" : "bg-gray-700"
           }`}
         >
           {isMuted ? "🔇" : "🎙️"}
         </button>
 
         <button
-          onClick={endCall}
-          className="w-20 h-20 bg-red-600 rounded-full flex items-center justify-center text-3xl shadow-2xl active:scale-95"
+          onClick={() => endCall()}
+          className="w-20 h-20 bg-red-600 rounded-full flex items-center justify-center text-3xl shadow-2xl active:scale-95 transition"
         >
           📵
         </button>
 
-        <div className="w-14 h-14" />
+        <div className="w-16 h-16" />
       </div>
     </div>
-  )
+  );
 }
